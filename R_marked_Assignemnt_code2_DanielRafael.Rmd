@@ -1,0 +1,175 @@
+---
+title: "LIFE891-Stats"
+output: html_document
+---
+
+```{r files}
+setwd("C:/Users/Rafael/Documents/Clark_hw")
+#Converting data to an object
+design<- read.table("NHBE_design.txt")
+dataNHBE<- read.table("NHBE_transc.txt")
+```
+
+```{r packages}
+source("https://bioconductor.org/biocLite.R")
+biocLite("limma")
+biocLite("edgeR")
+biocLite("Heatplus")
+install.packages("ggplot2")
+```
+
+```{r Time as numeric in h}
+library(ggplot2)
+library(arrayMvout)
+
+
+#Firs remove all "_h"
+#get time data
+design$time
+time_hours <- sub("_h",replacement = "", design$time)
+#second make numeric vector
+time_hours<- as.numeric(time_hours)
+
+#adding new col
+design[,4]<- time_hours
+#adding name to Col
+
+nom1<-colnames(design)
+nom1[4]<-"Time(h)"
+names(design)<-nom1
+```
+
+```{r combine dataframes}
+###remove header from design-> able to combine data & design 
+design_norows<-design[ ,-1] 
+
+###transpose the data table 
+tdata<-t(dataNHBE) 
+
+###combine both tables 
+MyData<-cbind.data.frame(design_norows,tdata)
+
+### BoxPlot
+qplot(data=MyData, x=MyData$Treatment, y=MyData$`1552286_at`, color=MyData$time, geom="boxplot")
+```
+
+```{r 2.1 and 2.2 - Matrix sorting by time and treatment and outliers}
+#Sort data by numerical time and treatment (Hours)
+CorrHours <- MyData[order(MyData$`Time(h)`,MyData$Treatment),]
+CorrHours[1:20,1:5]
+#For question >3.1 organize design by Trt
+designOrdenT<-design[order(design$Treatment),]
+
+#Sort data by treatment and numerical time (Treatment)
+CorrTreatment <- MyData[order(MyData$Treatment,MyData$`Time(h)`),]
+CorrTreatment[1:20,1:5]
+designOrdenH<-design[order(design$`Time(h)`),]
+
+#Convert data frame to Matrix
+MatrixH <- data.matrix(CorrHours)
+MatrixT <- data.matrix(CorrTreatment)
+
+MatrixH[1:23,1:20]
+MatrixT[1:23,1:20]
+
+
+##Transpose the matrices
+tMatrixH <- t(MatrixH)
+tMatrixT <- t(MatrixT)
+#it is necessary to remove rows time, etc
+tMatrixH<-tMatrixH[-c(1,2,3),]
+
+tMatrixT<-tMatrixT[-c(1,2,3),]
+
+#tMatrixH[1:20,1:5]
+#tMatrixT[1:20,1:5]
+
+# 2.2. Outlier detection
+data_out <- ArrayOutliers(dataNHBE, alpha=0.01)
+data_out
+
+```
+
+```{r Heatmap, Keeps crashing}
+
+### Heatmap
+library(Heatplus)
+memory.limit(8000)
+htmap_H <- regHeatmap(tMatrixH, legend=2, col=rainbow)
+htmap_T <- regHeatmap(tMatrixT, legend=2, col=rainbow)
+
+plot(htmap_H)
+plot(htmap_T)
+```
+
+```{r Questions 3.1 to 5.1, since these are related}
+
+library(limma)
+
+# Making the design matrix
+lev <- c("1_h","2_h","4_h","24_h")
+designTime<-factor(design$time, levels=lev)
+designTime
+
+dMatrixTime <- model.matrix(~ 0+designTime)
+dMatrixTime
+colnames(dMatrixTime) <- lev
+
+designTreat <- factor(design$Treatment)
+designTreat
+dMatrixTreat <- model.matrix(~ 0+designTreat)
+dMatrixTreat
+
+#3.1 Trt as covariate (do not discriminate by time)
+TrtGroup<-factor(designOrdenT$Treatment,levels = c("control","cigarette_smoke"))
+diseno31<-model.matrix(~0+TrtGroup)
+colnames(diseno31)<- c("control","cigarette_smoke")
+FitOnlyTrt<-lmFit(tMatrixT,diseno31)
+cont.matrix<- makeContrasts( Ctrl_Vs_Smoke=cigarette_smoke-control, levels = diseno31)
+FitOnlyTrt2<- contrasts.fit(FitOnlyTrt, cont.matrix)
+FitOnlyTrt2<- eBayes(FitOnlyTrt2)
+#Genes differentially express by Treatment
+GenesDiffT<-topTable(FitOnlyTrt2, number = 22737, p.value = 0.001)
+GenesDiffT<-topTable(FitOnlyTrt2, number = 22737, p.value = 0.05)
+
+
+#4.1
+HGroup<-factor(designOrdenH$`Time(h)`,levels = c(1,2,4,24))
+diseno41<-model.matrix(~0+HGroup)
+colnames(diseno41)<- c("One","Two","Three","Four")
+FitOnlyH<-lmFit(tMatrixH,diseno41)
+cont.matrix<- makeContrasts( TwovsOne=Two-One, FourvsTwo= Three-Two,Twenty4vsFour=Four-Three,levels=diseno41 )
+FitOnlyH2<- contrasts.fit(FitOnlyH, cont.matrix)
+FitOnlyH2<- eBayes(FitOnlyH2)
+#Genes differentially express by progressive Time
+GenesDiffH<-topTable(FitOnlyH2, number = 22737, p.value = 0.001)
+GenesDiffH<-topTable(FitOnlyH2, number = 22737, p.value = 0.05)
+
+
+#5.1 Linear Fit and Differential Gene Expression considering Treatment and Time as covariates
+#Start setting basis for natural regression spline
+library(splines)
+X<- ns(design$`Time(h)`, df=3)  #limma says df btw 3 and 5 is reasonable, but here only 3 works 
+GroupT<- factor(design$Treatment)
+diseno2<- model.matrix(~GroupT*X)
+#Then, Fit the model
+FitWithTime<- lmFit(tMatrixH,diseno2) 
+FitWithTime <- eBayes(FitWithTime)
+#The Genes with different "time trend"" expression with p. Value 0.001 for Control and Smoke_cigarette are 37
+GenesDiffExpr41<-topTable(FitWithTime, number = 22737, p.value = 0.001)
+#With FDR 0.05 as in adjust BH
+GenesDiffExpr42<-toptable(FitWithTime,adjust="BH", number = 22737)
+GenesDiffExpr42<-topTable(FitWithTime, number = 22737, p.value = 0.05)
+
+#Now let's cmpare pvalues from 3.2 and 5.1
+pvalue32<-FitOnlyTrt2$p.value
+pvalue51<- FitWithTime$p.value
+histo32<- hist(pvalue32)
+histo51<- hist(pvalue51)
+plot(histo32, col=rgb(0,0,1,1/4), ylim=c(500,40000),xlim=c(0,1), main= "Pvalues 3.2 and 5.1", xlab="p values")
+plot(histo51, col=rgb(1,0,0,1/4), ylim=c(500,40000),xlim=c(0,1),xlab="p values", add=T)
+
+
+
+```
+
